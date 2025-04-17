@@ -71,7 +71,7 @@ def play_file(file_path):
     stream = sd.RawOutputStream(
         samplerate=audioFile.samplerate,
         blocksize=0,
-        device=8,
+        device=0,
         channels=2,
         dtype='int32',
         callback=callback
