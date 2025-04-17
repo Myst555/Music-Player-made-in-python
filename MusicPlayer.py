@@ -1,6 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog
-from tkinter import ttk
+from tkinter import filedialog, ttk
 import soundfile as sf
 import sounddevice as sd
 from mutagen.flac import FLAC
@@ -9,21 +8,74 @@ from PIL import Image, ImageTk
 import io
 import os
 
-audioFile = None
-stream = None
+# Shows Device Outputs
+print(sd.query_devices())
+
+# Globals
+audio_file = None
+audio_stream = None
 playlist_files = []
 
 AUDIO_EXTENSIONS = ('.flac', '.wav', '.mp3', '.ogg', '.m4a')
 
-def callback(outdata, frames, time, status):
-    raw_bytes = audioFile.buffer_read(frames, dtype='int32')
-    bytes_to_write = min(len(outdata), len(raw_bytes))
-    outdata[:bytes_to_write] = raw_bytes[:bytes_to_write]
+# ========== Audio Playback ==========
+def audio_callback(outdata, frames, time, status):
+    try:
+        raw_bytes = audio_file.buffer_read(frames, dtype='int32')
+        outdata[:len(raw_bytes)] = raw_bytes
+        if len(raw_bytes) < len(outdata):
+            outdata[len(raw_bytes):] = b'\x00' * (len(outdata) - len(raw_bytes))
+            raise sd.CallbackStop()
+    except Exception as e:
+        print("Playback error:", e)
 
-    if bytes_to_write < len(outdata):
-        outdata[bytes_to_write:] = b'\x00' * (len(outdata) - bytes_to_write)
-        raise sd.CallbackStop()
+def play_audio(file_path):
+    global audio_file, audio_stream
 
+    stop_audio()
+
+    try:
+        audio_file = sf.SoundFile(file_path)
+    except Exception as e:
+        file_label.config(text=f"Error: {e}")
+        return
+
+    file_label.config(text=os.path.basename(file_path))
+    sample_label.config(text=f"Sample Rate: {audio_file.samplerate} Hz")
+    bitdepth_label.config(text=f"Bit Depth: {audio_file.subtype}")
+
+    cover_image = extract_cover_art(file_path)
+    if cover_image:
+        cover_label.config(image=cover_image, text='')
+        cover_label.image = cover_image
+    else:
+        cover_label.config(image='', text='No cover art found')
+
+    try:
+        audio_stream = sd.RawOutputStream(
+            samplerate=audio_file.samplerate,
+            blocksize=0,
+            device=0,       #change to desired device output   
+            channels=2,
+            dtype='int32',
+            callback=audio_callback
+        )
+        audio_stream.start()
+    except Exception as e:
+        print("Stream error:", e)
+        file_label.config(text=f"Audio error: {e}")
+
+def stop_audio():
+    global audio_stream
+    if audio_stream:
+        try:
+            audio_stream.stop()
+            audio_stream.close()
+        except Exception as e:
+            print("Error stopping stream:", e)
+        audio_stream = None
+
+# ========== Cover Art Extraction ==========
 def extract_cover_art(file_path):
     try:
         if file_path.endswith('.flac'):
@@ -43,56 +95,28 @@ def extract_cover_art(file_path):
         else:
             return None
 
-        image = Image.open(io.BytesIO(img_data))
-        image = image.resize((500, 500))
+        image = Image.open(io.BytesIO(img_data)).resize((500, 500), Image.LANCZOS)
         return ImageTk.PhotoImage(image)
     except Exception as e:
         print("Cover art error:", e)
-    return None
+        return None
 
-def play_file(file_path):
-    global audioFile, stream
-    if stream:
-        stream.stop()
-        stream.close()
-
-    fileLabel.config(text=file_path)
-    audioFile = sf.SoundFile(file_path)
-    sample.config(text=audioFile.samplerate)
-    bitdepth.config(text=audioFile.subtype)
-
-    photo = extract_cover_art(file_path)
-    if photo:
-        image_label.config(image=photo, text='')
-        image_label.image = photo
-    else:
-        image_label.config(image='', text='No cover found')
-
-    stream = sd.RawOutputStream(
-        samplerate=audioFile.samplerate,
-        blocksize=0,
-        device=0,
-        channels=2,
-        dtype='int32',
-        callback=callback
-    )
-    stream.start()
-    stop.config(command=stream.stop)
-
-def select_file():
-    selected_file = filedialog.askopenfilename(title='Select File')
-    if selected_file:
-        play_file(selected_file)
+# ========== File/Folder Selection ==========
+def select_single_file():
+    file_path = filedialog.askopenfilename(filetypes=[("Audio Files", AUDIO_EXTENSIONS)])
+    if file_path:
+        play_audio(file_path)
 
 def select_folder():
     global playlist_files
-    folder = filedialog.askdirectory(title="Select Folder")
-    if folder:
+    folder_path = filedialog.askdirectory()
+    if folder_path:
         playlist.delete(0, tk.END)
-        playlist_files = []
-        for file in os.listdir(folder):
+        playlist_files.clear()
+
+        for file in sorted(os.listdir(folder_path)):
             if file.lower().endswith(AUDIO_EXTENSIONS):
-                full_path = os.path.join(folder, file)
+                full_path = os.path.join(folder_path, file)
                 playlist.insert(tk.END, file)
                 playlist_files.append(full_path)
 
@@ -100,31 +124,30 @@ def on_playlist_select(event):
     selection = playlist.curselection()
     if selection:
         index = selection[0]
-        play_file(playlist_files[index])
+        play_audio(playlist_files[index])
 
+# ========== GUI Setup ==========
 root = tk.Tk()
-root.title('Music Player')
+root.title("Tkinter Music Player")
 
-image_label = tk.Label(root, text='No cover')
-image_label.grid(column=0, row=0, columnspan=3, pady=10)
+cover_label = tk.Label(root, text="No cover art")
+cover_label.grid(row=0, column=0, columnspan=3, pady=10)
 
-fileLabel = ttk.Label(root, text='N/a')
-fileLabel.grid(column=0, row=1)
+file_label = ttk.Label(root, text="No file selected")
+file_label.grid(row=1, column=0, columnspan=3)
 
-sample = ttk.Label(root, text='N/a')
-sample.grid(column=0, row=2)
+sample_label = ttk.Label(root, text="Sample Rate: N/A")
+sample_label.grid(row=2, column=0)
 
-bitdepth = ttk.Label(root, text='N/a')
-bitdepth.grid(column=1, row=2)
+bitdepth_label = ttk.Label(root, text="Bit Depth: N/A")
+bitdepth_label.grid(row=2, column=1)
 
-folder_btn = ttk.Button(root, text='Select Folder', command=select_folder)
-folder_btn.grid(column=0, row=3)
-
-stop = ttk.Button(root, text='Stop', command='')
-stop.grid(column=1, row=3)
+ttk.Button(root, text="Open File", command=select_single_file).grid(row=3, column=0)
+ttk.Button(root, text="Select Folder", command=select_folder).grid(row=3, column=1)
+ttk.Button(root, text="Stop", command=stop_audio).grid(row=3, column=2)
 
 playlist = tk.Listbox(root, width=60)
-playlist.grid(column=0, row=5, columnspan=3, pady=10)
+playlist.grid(row=4, column=0, columnspan=3, pady=10)
 playlist.bind("<<ListboxSelect>>", on_playlist_select)
 
 root.mainloop()
