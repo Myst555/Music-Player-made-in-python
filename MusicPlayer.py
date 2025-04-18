@@ -42,7 +42,8 @@ def play_audio(file_path):
 
     file_label.config(text=os.path.basename(file_path))
     sample_label.config(text=f"Sample Rate: {audio_file.samplerate} Hz")
-    bitdepth_label.config(text=f"Bit Depth: {audio_file.subtype}")
+    bitdepth = sf.info(file_path).subtype_info
+    bitdepth_label.config(text=f"Bit Depth: {bitdepth}")
 
     cover_image = extract_cover_art(file_path)
     if cover_image:
@@ -56,7 +57,7 @@ def play_audio(file_path):
             samplerate=audio_file.samplerate,
             blocksize=0,
             device=0,       #change to desired device output   
-            channels=2,
+            channels=audio_file.channels,
             dtype='int32',
             callback=audio_callback
         )
