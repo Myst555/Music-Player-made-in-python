@@ -182,10 +182,6 @@ class MyWindow(QMainWindow):
             self.play.setText("||")
 
     def playbackDone(self):
-        if self.handling_done:
-            return
-        self.handling_done = True
-        
         if self.isStream:
             self.stream.stop()
             self.stream.close() 
