@@ -1,154 +1,210 @@
-import tkinter as tk
-from tkinter import filedialog, ttk
-import soundfile as sf
-import sounddevice as sd
-from mutagen.flac import FLAC
+from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QListWidget
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QPixmap
+from PyQt6 import uic
 from mutagen.id3 import ID3, APIC
-from PIL import Image, ImageTk
-import io
+from mutagen.flac import FLAC
+import sounddevice as sd
+import soundfile as sf
+import sys
 import os
 
-# Shows Device Outputs
-print(sd.query_devices())
+class MyWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        uic.loadUi("style.ui", self)
 
-# Globals
-audio_file = None
-audio_stream = None
-playlist_files = []
+        self.OpenFile.triggered.connect(self.selectFile)
+        self.Open_Folder_obj.triggered.connect(self.openFolder)
+        self.play.clicked.connect(self.toggle)
+        self.playlist.itemDoubleClicked.connect(self.onItemSelected)
+        self.Slider.sliderReleased.connect(self.sliderMoved)
+        
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.updateSlider)
 
-AUDIO_EXTENSIONS = ('.flac', '.wav', '.mp3', '.ogg', '.m4a')
+        self.file_paths = []
+        self.handling_done = False
+        self.file_path = None
+        self.isplaying = False
+        self.isStream = False
+        self.fileFinished = False
+        self.currentIndex = None
+        self.singleFile = False
+        self.seeking = False
 
-# ========== Audio Playback ==========
-def audio_callback(outdata, frames, time, status):
-    try:
-        raw_bytes = audio_file.buffer_read(frames, dtype='int32')
-        outdata[:len(raw_bytes)] = raw_bytes
-        if len(raw_bytes) < len(outdata):
-            outdata[len(raw_bytes):] = b'\x00' * (len(outdata) - len(raw_bytes))
-            raise sd.CallbackStop()
-    except Exception as e:
-        print("Playback error:", e)
-
-def play_audio(file_path):
-    global audio_file, audio_stream
-
-    stop_audio()
-
-    try:
-        audio_file = sf.SoundFile(file_path)
-    except Exception as e:
-        file_label.config(text=f"Error: {e}")
-        return
-
-    file_label.config(text=os.path.basename(file_path))
-    sample_label.config(text=f"Sample Rate: {audio_file.samplerate} Hz")
-    bitdepth = sf.info(file_path).subtype_info
-    bitdepth_label.config(text=f"Bit Depth: {bitdepth}")
-
-    cover_image = extract_cover_art(file_path)
-    if cover_image:
-        cover_label.config(image=cover_image, text='')
-        cover_label.image = cover_image
-    else:
-        cover_label.config(image='', text='No cover art found')
-
-    try:
-        audio_stream = sd.RawOutputStream(
-            samplerate=audio_file.samplerate,
-            blocksize=0,
-            device=0,       #change to desired device output   
-            channels=audio_file.channels,
-            dtype='int32',
-            callback=audio_callback
+    def selectFile(self):
+        self.file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open File",
+            "",
+            "Audio Files (*.mp3 *.flac *.wav *.ogg *.aiff)"
         )
-        audio_stream.start()
-    except Exception as e:
-        print("Stream error:", e)
-        file_label.config(text=f"Audio error: {e}")
+        if self.file_path:
+            self.singleFile = True
+            self.loadFile()
 
-def stop_audio():
-    global audio_stream
-    if audio_stream:
+
+    def openFolder(self):
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Folder", "")
+        if folder_path:
+            files = [f for f in os.listdir(folder_path) if f.endswith(('.mp3', '.flac', '.wav', '.ogg', '.aiff'))]
+            self.file_paths = [os.path.join(folder_path, f) for f in files]
+            self.playlist.clear()
+            for f in files:
+                self.playlist.addItem(f)
+
+    def onItemSelected(self):
+        self.singleFile = False
+        self.currentIndex = self.playlist.currentRow()
+        self.file_path = self.file_paths[self.currentIndex]
+        self.loadFile()
+
+    def extractCoverArt(self, file_path):
         try:
-            audio_stream.stop()
-            audio_stream.close()
+            if file_path.endswith('.flac'):
+                audio = FLAC(file_path)
+                if audio.pictures:
+                    img_data = audio.pictures[0].data
+                else:
+                    return None
+            elif file_path.endswith('.mp3'):
+                audio = ID3(file_path)
+                for tag in audio.values():
+                    if isinstance(tag, APIC):
+                        img_data = tag.data
+                        break
+                else:
+                    return None
+            else:
+                return None
+            pixmap = QPixmap()
+            pixmap.loadFromData(img_data)
+            return pixmap
         except Exception as e:
-            print("Error stopping stream:", e)
-        audio_stream = None
-
-# ========== Cover Art Extraction ==========
-def extract_cover_art(file_path):
-    try:
-        if file_path.endswith('.flac'):
-            audio = FLAC(file_path)
-            if audio.pictures:
-                img_data = audio.pictures[0].data
-            else:
-                return None
-        elif file_path.endswith('.mp3'):
-            audio = ID3(file_path)
-            for tag in audio.values():
-                if isinstance(tag, APIC):
-                    img_data = tag.data
-                    break
-            else:
-                return None
-        else:
+            print("Cover art error:", e)
             return None
 
-        image = Image.open(io.BytesIO(img_data)).resize((500, 500), Image.LANCZOS)
-        return ImageTk.PhotoImage(image)
-    except Exception as e:
-        print("Cover art error:", e)
-        return None
+    def loadFile(self):
+        self.handling_done = False
+        if self.isStream:
+            self.stream.stop()
+            self.stream.close()
+            self.timer.stop()  
+            self.Slider.setValue(0)
+            self.isplaying = False
+            self.isStream = False
+            self.fileFinished = False
+            self.play.setText("▶")
 
-# ========== File/Folder Selection ==========
-def select_single_file():
-    file_path = filedialog.askopenfilename(filetypes=[("Audio Files", AUDIO_EXTENSIONS)])
-    if file_path:
-        play_audio(file_path)
+        if self.file_path:
+            self.title.setText(os.path.basename(self.file_path))
 
-def select_folder():
-    global playlist_files
-    folder_path = filedialog.askdirectory()
-    if folder_path:
-        playlist.delete(0, tk.END)
-        playlist_files.clear()
+            self.audio_file = sf.SoundFile(self.file_path)
+            self.Slider.setMinimum(0)
+            self.Slider.setMaximum(self.audio_file.frames) 
+            self.Bitrate.setText(self.audio_file.subtype)
+            self.SampleRate.setText(f"{str(self.audio_file.samplerate)}khz")
 
-        for file in sorted(os.listdir(folder_path)):
-            if file.lower().endswith(AUDIO_EXTENSIONS):
-                full_path = os.path.join(folder_path, file)
-                playlist.insert(tk.END, file)
-                playlist_files.append(full_path)
+            get_cover_image = self.extractCoverArt(self.file_path)
+            if get_cover_image:
+                pixmap = get_cover_image.scaled(
+                    self.label_art.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.label_art.setPixmap(pixmap)
 
-def on_playlist_select(event):
-    selection = playlist.curselection()
-    if selection:
-        index = selection[0]
-        play_audio(playlist_files[index])
+                self.playFile()
 
-# ========== GUI Setup ==========
-root = tk.Tk()
-root.title("Tkinter Music Player")
+    def audio_callback(self, outdata, frames, status, time):
+        try:
+            buffer = self.audio_file.read(frames, dtype='float32')
+            if len(buffer) < frames:
+                outdata[:len(buffer)] = buffer
+                outdata[len(buffer):] = 0.0
+                raise sd.CallbackStop()
+            else:
+                outdata[:] = buffer
+        except sd.CallbackStop:
+            pass
+        except Exception as e:
+            print("Playback error:", e)
+        finally:
+            if self.audio_file.tell() >= self.audio_file.frames and not self.handling_done:
+                self.handling_done = True
+                QTimer.singleShot(100, self.playbackDone)
 
-cover_label = tk.Label(root, text="No cover art")
-cover_label.grid(row=0, column=0, columnspan=3, pady=10)
+    def playFile(self):
+        self.stream = sd.OutputStream(
+            samplerate=self.audio_file.samplerate,
+            blocksize=4096,
+            device=0, #change this to desired audio output device
+            channels=self.audio_file.channels,
+            dtype='float32',
+            latency='high',
+            extra_settings=None,
+            callback=self.audio_callback,
+        )
+        self.stream.start()
+        self.timer.start(1000)
+        self.play.setText("||")
+        self.isStream = True
+        self.isplaying = True
+        self.fileFinished = False
 
-file_label = ttk.Label(root, text="No file selected")
-file_label.grid(row=1, column=0, columnspan=3)
+    def sliderMoved(self):
+        if self.isStream:
+            self.stream.stop()
+            self.audio_file.seek(self.Slider.value())
+            if self.isplaying:
+                self.stream.start()
 
-sample_label = ttk.Label(root, text="Sample Rate: N/A")
-sample_label.grid(row=2, column=0)
+    def updateSlider(self):
+        if not self.seeking:
+            current_pos = self.audio_file.tell()
+            self.Slider.setValue(current_pos)
 
-bitdepth_label = ttk.Label(root, text="Bit Depth: N/A")
-bitdepth_label.grid(row=2, column=1)
+    def toggle(self):
+        if not self.isStream and not self.fileFinished:
+            self.playFile()
+            self.play.setText("||")
+        elif self.fileFinished and not self.isStream:
+            self.audio_file.seek(0)
+            self.playFile()
+        elif self.isplaying:
+            self.stream.stop()
+            self.isplaying = False
+            self.play.setText("▶")
+        else:
+            self.stream.start()
+            self.isplaying = True
+            self.play.setText("||")
 
-ttk.Button(root, text="Open File", command=select_single_file).grid(row=3, column=0)
-ttk.Button(root, text="Select Folder", command=select_folder).grid(row=3, column=1)
-ttk.Button(root, text="Stop", command=stop_audio).grid(row=3, column=2)
+    def playbackDone(self):
+        if self.handling_done:
+            return
+        self.handling_done = True
+        
+        if self.isStream:
+            self.stream.stop()
+            self.stream.close() 
+            
+        self.fileFinished = True
+        self.timer.stop()
+        self.isplaying = False
+        self.isStream = False
+        self.play.setText("▶")
+        self.Slider.setValue(0)
+        if not self.singleFile:
+            self.currentIndex += 1
+            if self.currentIndex < len(self.file_paths):
+                self.file_path = self.file_paths[self.currentIndex]
+                self.loadFile()
 
-playlist = tk.Listbox(root, width=60)
-playlist.grid(row=4, column=0, columnspan=3, pady=10)
-playlist.bind("<<ListboxSelect>>", on_playlist_select)
+print(sd.query_devices())
 
-root.mainloop()
+app = QApplication(sys.argv)
+window = MyWindow()
+window.show()
+sys.exit(app.exec())
