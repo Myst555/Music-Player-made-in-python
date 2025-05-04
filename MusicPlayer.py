@@ -1,6 +1,6 @@
-from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QListWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QFileDialog, QGraphicsDropShadowEffect
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QColor
 from PyQt6 import uic
 from mutagen.id3 import ID3, APIC
 from mutagen.flac import FLAC
@@ -14,6 +14,25 @@ class MyWindow(QMainWindow):
         super().__init__()
         uic.loadUi("style.ui", self)
 
+        shadow1 = QGraphicsDropShadowEffect(self)
+        shadow1.setBlurRadius(8)
+        shadow1.setOffset(0, 3)
+        shadow1.setColor(QColor(0, 0, 0, 80))
+
+        shadow2 = QGraphicsDropShadowEffect(self)
+        shadow2.setBlurRadius(8)
+        shadow2.setOffset(0, 3)
+        shadow2.setColor(QColor(0, 0, 0, 80))
+
+        shadow3 = QGraphicsDropShadowEffect(self)
+        shadow3.setBlurRadius(8)
+        shadow3.setOffset(0, 3)
+        shadow3.setColor(QColor(0, 0, 0, 80))
+
+        self.embedded_cover_label.setGraphicsEffect(shadow1)
+        self.frame.setGraphicsEffect(shadow2)
+        self.frame_4.setGraphicsEffect(shadow3)
+
         self.OpenFile.triggered.connect(self.selectFile)
         self.Open_Folder_obj.triggered.connect(self.openFolder)
         self.play.clicked.connect(self.toggle)
@@ -21,7 +40,7 @@ class MyWindow(QMainWindow):
         self.Slider.sliderReleased.connect(self.sliderMoved)
         
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.updateSlider)
+        self.timer.timeout.connect(self.updateUI)
 
         self.file_paths = []
         self.handling_done = False
@@ -32,18 +51,17 @@ class MyWindow(QMainWindow):
         self.currentIndex = None
         self.singleFile = False
         self.seeking = False
+        self.current_pos = None
+
+    def updateUI(self):
+        self.updateSlider()
+        self.updateDuration()
 
     def selectFile(self):
-        self.file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open File",
-            "",
-            "Audio Files (*.mp3 *.flac *.wav *.ogg *.aiff)"
-        )
+        self.file_path, _ = QFileDialog.getOpenFileName(self,"Open File","", "Audio Files (*.mp3 *.flac *.wav *.ogg *.aiff)")
         if self.file_path:
             self.singleFile = True
             self.loadFile()
-
 
     def openFolder(self):
         folder_path = QFileDialog.getExistingDirectory(self, "Select Folder", "")
@@ -102,10 +120,15 @@ class MyWindow(QMainWindow):
 
             self.audio_file = sf.SoundFile(self.file_path)
             self.Slider.setMinimum(0)
-            self.Slider.setMaximum(self.audio_file.frames) 
+            self.Slider.setMaximum(self.audio_file.frames)
             self.Bitrate.setText(self.audio_file.subtype)
             self.SampleRate.setText(f"{str(self.audio_file.samplerate)}khz")
 
+            self.current_pos = 0
+            self.Slider.setValue(0)
+            self.updateDuration()
+
+            self.label_art.clear()
             get_cover_image = self.extractCoverArt(self.file_path)
             if get_cover_image:
                 pixmap = get_cover_image.scaled(
@@ -133,26 +156,29 @@ class MyWindow(QMainWindow):
         finally:
             if self.audio_file.tell() >= self.audio_file.frames and not self.handling_done:
                 self.handling_done = True
-                QTimer.singleShot(100, self.playbackDone)
+                QTimer.singleShot(50, self.playbackDone)
 
     def playFile(self):
-        self.stream = sd.OutputStream(
-            samplerate=self.audio_file.samplerate,
-            blocksize=4096,
-            device=0, #change this to desired audio output device
-            channels=self.audio_file.channels,
-            dtype='float32',
-            latency='high',
-            extra_settings=None,
-            callback=self.audio_callback,
-        )
-        self.stream.start()
-        self.timer.start(1000)
-        self.play.setText("||")
-        self.isStream = True
-        self.isplaying = True
-        self.fileFinished = False
-
+        try:
+            self.stream = sd.OutputStream(
+                samplerate=self.audio_file.samplerate,
+                blocksize=4096,
+                device=0,
+                channels=self.audio_file.channels,
+                dtype='float32',
+                latency='high',
+                #extra_settings=sd.WasapiSettings(exclusive=True),
+                callback=self.audio_callback,
+            )
+            self.stream.start()
+            self.timer.start(1000)
+            self.play.setText("||")
+            self.isStream = True
+            self.isplaying = True
+            self.fileFinished = False
+        except Exception as e:
+            print("Select a File")
+            
     def sliderMoved(self):
         if self.isStream:
             self.stream.stop()
@@ -162,8 +188,27 @@ class MyWindow(QMainWindow):
 
     def updateSlider(self):
         if not self.seeking:
-            current_pos = self.audio_file.tell()
-            self.Slider.setValue(current_pos)
+            self.current_pos = self.audio_file.tell()
+            self.Slider.setValue(self.current_pos)
+
+    def format_time(self, seconds):
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{minutes:02}:{secs:02}"
+
+    def updateDuration(self):
+        if self.current_pos is None:
+            return
+
+        current = self.current_pos
+        max_duration = self.audio_file.frames
+        current_seconds = current / self.audio_file.samplerate
+        max_seconds = max_duration / self.audio_file.samplerate
+
+        current_str = self.format_time(current_seconds)
+        max_str = self.format_time(max_seconds)
+
+        self.duration.setText(f"{current_str} / {max_str}")
 
     def toggle(self):
         if not self.isStream and not self.fileFinished:
