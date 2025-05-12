@@ -6,6 +6,7 @@ from mutagen.id3 import ID3, APIC
 from mutagen.flac import FLAC
 import sounddevice as sd
 import soundfile as sf
+import gc
 import sys
 import os
 
@@ -14,24 +15,11 @@ class MyWindow(QMainWindow):
         super().__init__()
         uic.loadUi("style.ui", self)
 
-        shadow1 = QGraphicsDropShadowEffect(self)
-        shadow1.setBlurRadius(8)
-        shadow1.setOffset(0, 3)
-        shadow1.setColor(QColor(0, 0, 0, 80))
+        self.setFixedSize(801, 566)
 
-        shadow2 = QGraphicsDropShadowEffect(self)
-        shadow2.setBlurRadius(8)
-        shadow2.setOffset(0, 3)
-        shadow2.setColor(QColor(0, 0, 0, 80))
-
-        shadow3 = QGraphicsDropShadowEffect(self)
-        shadow3.setBlurRadius(8)
-        shadow3.setOffset(0, 3)
-        shadow3.setColor(QColor(0, 0, 0, 80))
-
-        self.embedded_cover_label.setGraphicsEffect(shadow1)
-        self.frame.setGraphicsEffect(shadow2)
-        self.frame_4.setGraphicsEffect(shadow3)
+        self.embedded_cover_label.setGraphicsEffect(self.shadowEffect())
+        self.frame.setGraphicsEffect(self.shadowEffect())
+        self.frame_4.setGraphicsEffect(self.shadowEffect())
 
         self.OpenFile.triggered.connect(self.selectFile)
         self.Open_Folder_obj.triggered.connect(self.openFolder)
@@ -52,6 +40,17 @@ class MyWindow(QMainWindow):
         self.singleFile = False
         self.seeking = False
         self.current_pos = None
+
+    def shadowEffect(self):
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(8)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(0, 0, 0, 80))
+        return shadow
+
+    def garbageCollect(self):
+        self.collected = gc.collect()
+        print("Garbage collector:", self.collected)
 
     def updateUI(self):
         self.updateSlider()
@@ -99,6 +98,7 @@ class MyWindow(QMainWindow):
             pixmap = QPixmap()
             pixmap.loadFromData(img_data)
             return pixmap
+            print("Imbedded Art Loaded")
         except Exception as e:
             print("Cover art error:", e)
             return None
@@ -114,6 +114,7 @@ class MyWindow(QMainWindow):
             self.isStream = False
             self.fileFinished = False
             self.play.setText("▶")
+            self.garbageCollect()
 
         if self.file_path:
             self.title.setText(os.path.basename(self.file_path))
@@ -137,7 +138,6 @@ class MyWindow(QMainWindow):
                     Qt.TransformationMode.SmoothTransformation
                 )
                 self.label_art.setPixmap(pixmap)
-
                 self.playFile()
 
     def audio_callback(self, outdata, frames, status, time):
@@ -241,6 +241,7 @@ class MyWindow(QMainWindow):
             self.currentIndex += 1
             if self.currentIndex < len(self.file_paths):
                 self.file_path = self.file_paths[self.currentIndex]
+                self.garbageCollect()
                 self.loadFile()
 
 print(sd.query_devices())
